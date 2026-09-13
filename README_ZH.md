@@ -40,7 +40,7 @@
 - 解锁任意数量未拥有的游戏
 - 解锁未拥有游戏的所有 DLC
 - 支持从 Lua 配置自动加载仓库（depot）解密密钥
-- 支持通过 `opensteamtool` / `steamrun` / `wudrm` 上游 API 自动下载 manifest（默认为 `opensteamtool`），或通过自定义 Lua 端点（参见 [通过 Lua 获取 Manifest](#通过-lua-获取-manifest)）
+- 支持通过 `manifestdex` / `opensteamtool` / `steamrun` / `wudrm` 上游 API 自动下载 manifest（默认为 `manifestdex`），或通过自定义 Lua 端点（参见 [通过 Lua 获取 Manifest](#通过-lua-获取-manifest)）
 - 支持下载需要访问令牌的保护游戏或 DLC
 - 支持绑定 manifest 以防止特定游戏被更新
 
@@ -55,39 +55,27 @@
 - 绕过 Steam 家庭共享限制，适用于通过 Lua 中 `addappid` 添加到库的游戏。参与共享的 Steam 家庭中的所有账户都必须使用 OpenSteamTool 才能生效
 
 ### 兼容 Denuvo 和 SteamStub 保护的游戏
-- 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 可以重用 Steam 本地 ConfigStore 令牌，通过 SteamDRMP 令牌解析漏洞伪造请求的 AppId，无需注入游戏进程
-- Denuvo 保护的游戏仍需要显式令牌数据。OpenSteamTool 通过平台凭据存储保存 `AppTicket` 和 `ETicket`
-- 在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")` 自动将这些值写入平台凭据存储
-- Denuvo 验证有 30 分钟有效窗口。过期后授权可能失败，显示 Denuvo 错误代码 `88500005`；重试前请刷新令牌数据
-- AppTicket 优先级：显式令牌优先级最高，包括通过 `setAppTicket` 配置的令牌和已缓存的 `AppTicket` 凭据值。若无可用显式 AppTicket，OpenSteamTool 回退到伪造的本地 ConfigStore 令牌路径
-- SteamID 优先级：优先读取缓存的 `SteamID`；若缺失，则从显式 `AppTicket` 解析。在 Windows 上，凭据存储后端当前使用 `HKCU\Software\Valve\Steam\Apps\<AppId>`。Linux 后端尚未实现
+- 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 通过 Steam 本地 ConfigStore 令牌伪造 AppId，无需注入游戏进程
+- Denuvo 保护的游戏仍需凭据数据。所有凭据保存在 `<Steam或便携目录>/config/credentials/<AppId>/`（含 `AppTicket.bin`、`ETicket.bin`、`SteamID.txt`），不再写入 Windows 注册表
+- **显式设置票据**：在 Lua 配置中使用 `setAppTicket(appid, "hex")` 和 `setETicket(appid, "hex")`。`AppTicket` 本身已内嵌 SteamID，使用票据时**不需要**配置 `SteamID.txt`。彻底删除对应 Lua 脚本时，该凭据目录会自动清理
+- **切号离线授权**：拥有游戏的账号在线启动通过验证后，系统会自动保存该账号的 `SteamID.txt`。切换到无游戏的账号即可
+- **SteamID 优先级与 Error 54**：优先读取 `AppTicket` 内嵌的 SteamID；若无显式票据，再读取 `SteamID.txt`。若 SteamID 与票据不匹配，Denuvo 将报错误代码 54 (`k_EResultDiskFull`)
+- Denuvo 令牌存在时效性或硬件绑定。若授权失败显示错误代码 `88500005`，请重新提取并刷新 Lua 配置中的票据数据
 
-#### 使用 `extract_tickets` 提取令牌
+### 使用 `extract_tickets` 提取授权与配置文件
 
-`extract_tickets` 工具会转储你需要的 `AppTicket` 和 `ETicket` 十六进制字符串，用于 `setAppTicket` / `setETicket`。在 Steam 运行并登录到**拥有**目标游戏的账户的机器上运行它。
+`extract_tickets` 工具可在拥有目标游戏的机器上提取该游戏所需的授权文件（AppTicket / ETicket）、拥有的 DLC 及清单文件（`*.manifest`），并一键生成可直接使用的 `<appid>.lua` 配置文件。
 
-1. 构建工具（参见 [构建](#构建)）；二进制文件位于 `build/tools/Release/extract_tickets.exe`
-2. 使用目标 AppId 运行它（或不带参数运行，在提示时输入 AppId）：
-   ```powershell
-   extract_tickets.exe 1361510
-   ```
-3. 它从注册表读取 Steam 安装路径，加载 `steamclient64.dll`，并将所有内容写入可执行文件旁边的 `<appid>/` 文件夹：
-   - `appticket.bin` — 原始应用所有权令牌（二进制）
-   - `eticket.bin` — 原始加密应用令牌（二进制）
-   - `tickets.txt` — 包含十六进制字符串的纯文本摘要：
-     ```
-     appid:1361510
-     appticket(184 bytes):14000000...
-     eticket(143 bytes):...
-     ```
-   无法获取的令牌报告为 `appticket:null` / `eticket:null`
-4. 将 `tickets.txt` 中的十六进制字符串粘贴到你的 Lua 配置中：
-   ```lua
-   setAppTicket(1361510, "14000000...")
-   setETicket(1361510, "...")
-   ```
-
-> **注意：** 令牌仅当从**真正拥有**游戏的账户提取时才有效
+* **下载地址**：可前往 [GitHub Actions Tools 页面](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml) 下载编译好的 `extract_tickets.exe`。
+* **使用方法**：
+  在 Steam 运行且登录拥有该游戏的账号后运行（传入目标 AppId 或根据提示输入）：
+  ```powershell
+  extract_tickets.exe 1361510
+  ```
+* **输出内容**（保存在 `<appid>/` 文件夹中）：
+  * `<appid>.lua` — 完整、开箱即用的配置文件（包含 AppId、拥有的 DLC、Depot 密钥、固定清单 `setManifestid` 及授权配置），直接复制到 `config/lua/` 目录即可生效。
+  * `*.manifest` — 自动从本地缓存提取的 Depot 清单文件。
+  * `appticket.bin` / `eticket.bin` — 原始授权令牌文件。
 
 ### 统计和成就
 - 为未拥有的游戏启用统计和成就
@@ -103,10 +91,24 @@
 
 ## 使用方法
 
-1. 在项目根目录运行 `build.bat` 构建项目
-2. 将生成的 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 根目录
-3. 创建 Lua 目录（例如 `C:\steam\config\lua`）并将 Lua 脚本放在那里。DLL 会自动加载并执行它们
-4. Lua 示例：
+### 方式一：便携模式（推荐，使用 ost-Injector）
+
+便携模式完全独立运行，**无需向 Steam 安装目录放置任何 DLL，也不改动 Steam 文件夹**：
+
+1. 解压构建好的发布包（包含 `ost-Injector.exe`、`OpenSteamTool.dll`、`CreateAutoInjectTask.bat`、`DeleteAutoInjectTask.bat`、`config.ini` 等）到任意独立便携目录（例如 `D:\OpenSteamTool_Portable`）。
+2. 在该目录下创建 `config/lua/` 文件夹，并放入游戏或 DLC 解锁脚本（如 `games.lua`）。
+3. 选择启动方式：
+   - **手动启动**：直接双击运行 `ost-Injector.exe`，注入器会自动检测或拉起 Steam，并在 Steam UI 就绪后自动完成注入。
+   - **开机自动静默注入**：右键以管理员身份运行 `CreateAutoInjectTask.bat`，即可创建开机登录计划任务。注入器将在后台以 `-watch` 模式常驻静默监听，一旦检测到 Steam 启动立即自动完成注入。若需移除自启任务，右键管理员运行 `DeleteAutoInjectTask.bat` 即可。
+   - **命令行模式**：`ost-Injector.exe` 支持 `-watch`（后台常驻监听）与 `-silent`（单次静默注入）。默认配置文件 `config.ini` 可自定义 Steam 可执行程序路径与目标 DLL 路径。
+
+### 方式二：标准模式（DLL 劫持）
+
+1. 在项目根目录运行 `build.bat` 构建项目，或下载预编译 Release 包。
+2. 将生成的 `dwmapi.dll`、`xinput1_4.dll` 和 `OpenSteamTool.dll` 复制到 Steam 根目录。
+3. 创建 Lua 目录（例如 `C:\Program Files (x86)\Steam\config\lua`）并将 Lua 脚本放在那里。DLL 会自动加载并执行它们。
+
+### Lua 配置示例
 ```lua
 addappid(1361510) -- 解锁 appid 为 1361510 的游戏
 
@@ -119,9 +121,8 @@ addtoken(1361510,"2764735786934684318") -- 为 appid 为 1361510 的游戏添加
 setManifestid(1361511,"5656605350306673283") -- 固定 depotid:1361511 manifest_gid:5656605350306673283，大小默认为 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- 同上，但指定明确大小
 
-setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 写入凭据存储；在 Windows 上：HKCU\Software\Valve\Steam\Apps\1361510\AppTicket
-
-setETicket(1361510,"0100000000000000...") -- 将 ETicket 写入凭据存储；在 Windows 上：HKCU\Software\Valve\Steam\Apps\1361510\ETicket
+setAppTicket(1361510,"0100000000000000...") -- 将 AppTicket 写入凭据存储（config/credentials/1361510/AppTicket.bin）
+setETicket(1361510,"0100000000000000...")   -- 将 ETicket 写入凭据存储（config/credentials/1361510/ETicket.bin）
 
 setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用于 appid 1361510
 -- 若未配置，启用时使用 stats API；否则使用默认 SteamID 76561198028121353
@@ -141,8 +142,8 @@ setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用
 level = "info"
 
 [manifest]
-# 仓库 manifest 请求码的上游 API。选项："opensteamtool"、"steamrun"、"wudrm"
-url = "opensteamtool"
+# 仓库 manifest 请求码的上游 API。选项："manifestdex"、"opensteamtool"、"steamrun"、"wudrm"
+url = "manifestdex"
 
 # manifest 请求的 HTTP 超时（毫秒）
 timeout_resolve_ms = 5000
@@ -264,8 +265,8 @@ build.bat
 ```
 
 ### 输出
-- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/xinput1_4.dll`
-- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/xinput1_4.dll`
+- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/xinput1_4.dll`、`build/Debug/ost-Injector.exe` 以及自动复制的辅助脚本
+- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/xinput1_4.dll`、`build/Release/ost-Injector.exe` 以及自动复制的辅助脚本
 
 ## 免责声明
 本项目仅供研究和教育目的使用。你负责遵守当地法律、平台服务条款和软件许可证。

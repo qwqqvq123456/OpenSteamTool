@@ -1,4 +1,6 @@
 #include "Config.h"
+#include "dllmain.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "Utils/Logging/Log.h"
 #include "Utils/SteamMetadata/ManifestClient.h"
 
@@ -11,14 +13,14 @@ namespace Config {
 namespace {
 
     struct Snapshot {
-        std::string manifestProvider = "opensteamtool";
+        std::string manifestProvider = "manifestdex";
         ManifestTimeouts manifestTimeouts;
         LogLevel logLevel = LogLevel::Debug;
         std::string logDir;
         std::vector<std::string> luaPaths;
         std::string remoteUrlTemplate;
         bool statsEnableApi = true;
-        InjectionSettings injection;
+        std::vector<InjectDll> injectDlls;
         CloudSettings cloud;
     };
 
@@ -38,8 +40,14 @@ namespace {
 
     Snapshot MakeDefaultSnapshot(const std::string& configPath) {
         Snapshot snapshot;
-        std::filesystem::path p(configPath);
-        snapshot.logDir = (p.parent_path() / "opensteamtool").string();
+        const char* storageDir = GetStorageDirectory();
+        if (storageDir && storageDir[0] != '\0') {
+            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(
+                OSTPlatform::Encoding::PathFromUtf8(storageDir) / "opensteamtool");
+        } else {
+            std::filesystem::path p = OSTPlatform::Encoding::PathFromUtf8(configPath);
+            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(p.parent_path() / "opensteamtool");
+        }
         return snapshot;
     }
 
@@ -53,9 +61,7 @@ namespace {
         luaPaths               = snapshot.luaPaths;
         remoteUrlTemplate      = snapshot.remoteUrlTemplate;
         statsEnableApi         = snapshot.statsEnableApi;
-        injectEnabled          = snapshot.injection.enabled;
-        injectLibraryX86       = snapshot.injection.libraryX86;
-        injectLibraryX64       = snapshot.injection.libraryX64;
+        injectDlls             = snapshot.injectDlls;
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
     }
@@ -63,7 +69,7 @@ namespace {
     void ApplyManifestProvider(const std::string& provider) {
         if (!ManifestClient::SetProvider(provider)) {
             LOG_WARN("Unknown manifest.url \"{}\", keeping default", provider);
-            ManifestClient::SetProvider("opensteamtool");
+            ManifestClient::SetProvider("manifestdex");
         }
     }
 
@@ -81,7 +87,8 @@ namespace {
 
     LoadResult Load(const std::string& configPath) {
         Snapshot snapshot = MakeDefaultSnapshot(configPath);
-        if (!std::filesystem::exists(configPath)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(configPath), ec)) {
             LOG_INFO("Config file not found, using defaults");
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
@@ -95,7 +102,7 @@ namespace {
         }
 
         try {
-            auto tbl = toml::parse_file(configPath);
+            auto tbl = toml::parse_file(OSTPlatform::Encoding::PathFromUtf8(configPath).wstring());
 
             // [manifest]
             if (auto manifest = tbl["manifest"].as_table()) {
@@ -120,6 +127,21 @@ namespace {
                     else if (*val == "info")        snapshot.logLevel = LogLevel::Info;
                     else if (*val == "warn")        snapshot.logLevel = LogLevel::Warn;
                     else if (*val == "error")       snapshot.logLevel = LogLevel::Error;
+                }
+                if (auto val = (*log)["dir"].value<std::string>()) {
+                    std::filesystem::path p = OSTPlatform::Encoding::PathFromUtf8(*val);
+                    if (p.is_relative()) {
+                        const char* storageDir = GetStorageDirectory();
+                        if (storageDir && storageDir[0] != '\0') {
+                            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(
+                                OSTPlatform::Encoding::PathFromUtf8(storageDir) / p);
+                        } else {
+                            snapshot.logDir = OSTPlatform::Encoding::PathToUtf8(
+                                OSTPlatform::Encoding::PathFromUtf8(configPath).parent_path() / p);
+                        }
+                    } else {
+                        snapshot.logDir = *val;
+                    }
                 }
             }
 
@@ -148,14 +170,45 @@ namespace {
                 }
             }
 
-            // [inject]
-            if (auto inject = tbl["inject"].as_table()) {
-                if (auto val = (*inject)["enabled"].value<bool>())
-                    snapshot.injection.enabled = *val;
-                if (auto val = (*inject)["library_x86"].value<std::string>())
-                    snapshot.injection.libraryX86 = *val;
-                if (auto val = (*inject)["library_x64"].value<std::string>())
-                    snapshot.injection.libraryX64 = *val;
+            // [[inject]]
+            if (auto arr = tbl["inject"].as_array()) {
+                std::filesystem::path configDir = OSTPlatform::Encoding::PathFromUtf8(configPath).parent_path();
+                for (auto& node : *arr) {
+                    auto t = node.as_table();
+                    if (!t) continue;
+                    auto path = (*t)["path"].value<std::string>();
+                    if (!path || path->empty()) continue;
+
+                    // Relative paths resolve next to opensteamtool.toml, DLL dir, or steam.exe
+                    std::filesystem::path full = OSTPlatform::Encoding::PathFromUtf8(*path);
+                    if (full.is_relative()) {
+                        std::filesystem::path candidate = configDir / full;
+                        std::error_code ec;
+                        if (std::filesystem::exists(candidate, ec)) {
+                            full = candidate;
+                        } else if (DllDir[0] != '\0' && std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(DllDir) / full, ec)) {
+                            full = OSTPlatform::Encoding::PathFromUtf8(DllDir) / full;
+                        } else if (SteamInstallPath[0] != '\0' && std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / full, ec)) {
+                            full = OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / full;
+                        } else {
+                            full = candidate;
+                        }
+                    }
+                    std::error_code ec;
+                    if (!std::filesystem::exists(full, ec)) {
+                        LOG_WARN("inject dll not found: {}", OSTPlatform::Encoding::PathToUtf8(full));
+                        continue;
+                    }
+
+                    InjectDll dll;
+                    dll.path = OSTPlatform::Encoding::PathToUtf8(full);
+                    if (auto val = (*t)["when_cmdline"].value<std::string>()) dll.whenCmdline = *val;
+                    if (auto val = (*t)["all_games"].value<bool>())           dll.allGames   = *val;
+                    if (auto ids = (*t)["when_appids"].as_array())
+                        for (auto& id : *ids)
+                            if (auto v = id.value<int64_t>()) dll.whenAppids.insert(static_cast<AppId_t>(*v));
+                    snapshot.injectDlls.push_back(std::move(dll));
+                }
             }
 
             // [cloud]
@@ -225,15 +278,6 @@ namespace {
     std::string GetRemoteUrlTemplate() {
         std::lock_guard lock(g_mutex);
         return remoteUrlTemplate;
-    }
-
-    InjectionSettings GetInjectionSettings() {
-        std::lock_guard lock(g_mutex);
-        return {
-            injectEnabled,
-            injectLibraryX86,
-            injectLibraryX64,
-        };
     }
 
     bool GetStatsEnableApi() {

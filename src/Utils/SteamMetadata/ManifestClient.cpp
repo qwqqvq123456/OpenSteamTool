@@ -42,19 +42,23 @@ namespace ManifestClient {
         std::string_view name;          // matches [manifest] url = "..."
         const char*      urlTemplate;   // full literal with one %llu — for log & path
         Parser           parse;
+        const wchar_t*   headers;
     };
 
-    consteval Provider Make(std::string_view name, const char* url, Parser parse) {
-        return {name, url, parse};
+    consteval Provider Make(std::string_view name, const char* url, Parser parse,
+                            const wchar_t* headers = nullptr) {
+        return {name, url, parse, headers};
     }
 
     static constexpr Provider kProviders[] = {
+        Make("manifestdex",   "https://manifest.manifestdex.com/%llu",         ParsePlainUint,
+             L"User-Agent: ManifestDeX/1.0\r\n"),
         Make("opensteamtool", "https://manifest.opensteamtool.com/%llu",       ParsePlainUint),
         Make("wudrm",         "http://gmrc.wudrm.com/manifest/%llu",           ParsePlainUint),
         Make("steamrun",      "https://manifest.steam.run/api/manifest/%llu",  ParseSteamRunJson),
     };
 
-    static const Provider* g_active = &kProviders[0];   // opensteamtool
+    static const Provider* g_active = &kProviders[0];   // manifestdex
     static std::mutex      g_mutex;
 
     bool SetProvider(std::string_view name) {
@@ -92,7 +96,7 @@ namespace ManifestClient {
             urlLog,
             nullptr,
             0,
-            nullptr,
+            p.headers,
             timeouts.resolve,
             timeouts.connect,
             timeouts.send,

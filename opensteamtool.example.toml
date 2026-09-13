@@ -9,7 +9,8 @@ level = "debug"
 
 [manifest]
 # Which upstream API to query for depot manifest request codes.
-#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}   (default)
+#   "manifestdex"   → https://manifest.manifestdex.com/{gid}     (default)
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}
 #   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recommended for China users)
 #   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
 # If <Steam>/config/lua/manifest.lua defines fetch_manifest_code(gid) or
@@ -44,7 +45,7 @@ level = "debug"
 #     end
 #     return nil
 # end
-url = "opensteamtool"
+url = "manifestdex"
 
 # HTTP timeouts for manifest requests (milliseconds).
 # timeout_resolve_ms  — DNS resolution        (default: 5000)
@@ -71,26 +72,29 @@ enable_api = true
 [lua]
 # paths = []
 
-[inject]
-# Optional library injection into game processes.
-# The injected library must match the target process architecture.
-enabled = false
-# library_x64 = "OpenSteamTool.GameHook.x64.dll"
-# library_x86 = "OpenSteamTool.GameHook.x86.dll"
+# Optional library injection into game processes. Each [[inject]] entry is loaded
+# when every condition it sets matches the launch.
+# Example:
+#   [[inject]]
+#   path = "OpenSteamToolHook.dll"      # bare name resolves next to steam.exe; absolute path used as-is
+#   when_cmdline = "-my_special_hook"   # optional: require this substring in the launch command (default: any)
+#   when_appids = [1361510]             # optional: restrict to these appids (default: any)
+#   all_games = false                   # optional: true injects into every game, false only into Lua-added games (default: false)
 
 [cloud]
 # Optional Steam Cloud save redirection for unlocked ("lua") games, powered by
 # CloudRedirect (https://github.com/Selectively11/CloudRedirect).
 # When enabled, OpenSteamTool loads cloud_redirect.dll inside Steam, registers
 # every addappid() game as a redirected app, and routes their Steam Cloud RPCs
-# through CloudRedirect's cloud-save engine.
+# through CloudRedirect's cloud-save engine (fully compatible with Diversion memory isolation).
 #
 # Provider sign-in (Google Drive / OneDrive / local folder) is still done through
 # CloudRedirect's own companion app — OpenSteamTool only hosts the DLL.
 enabled = false
-# Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
-# Defaults to "<Steam>/cloud_redirect.dll" when unset.
+# Path to cloud_redirect.dll. Absolute, or relative to opensteamtool.toml, DLL dir, or Steam root.
+# Defaults to searching alongside opensteamtool.toml, OpenSteamTool.dll, then Steam root.
 # library = "cloud_redirect.dll"
+
 
 [remote]
 # Optional metadata mirror. Leave unset to use GitHub with jsDelivr fallback.

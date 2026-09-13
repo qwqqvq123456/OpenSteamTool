@@ -5,6 +5,8 @@
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Logging/Log.h"
 #include "OSTPlatform/include/DirectoryWatch.h"
+#include "OSTPlatform/include/Encoding.h"
+#include "dllmain.h"
 
 #include <atomic>
 #include <cctype>
@@ -48,6 +50,13 @@ bool ContainsConfigChange(
 std::vector<std::string> BuildLuaWatchDirs() {
     std::vector<std::string> watchDirs = Config::GetLuaPaths();
     watchDirs.push_back(g_defaultLuaDir);
+    if (IsPortableMode()) {
+        std::string steamLua = OSTPlatform::Encoding::PathToUtf8(
+            OSTPlatform::Encoding::PathFromUtf8(SteamInstallPath) / "config" / "lua");
+        if (std::filesystem::exists(OSTPlatform::Encoding::PathFromUtf8(steamLua)) && steamLua != g_defaultLuaDir) {
+            watchDirs.push_back(steamLua);
+        }
+    }
     return watchDirs;
 }
 
@@ -79,13 +88,14 @@ void ReloadConfig() {
 }
 
 void WatcherThread() {
-    const std::filesystem::path configPath(g_configPath);
+    const std::filesystem::path configPath = OSTPlatform::Encoding::PathFromUtf8(g_configPath);
     const std::filesystem::path dirPath = configPath.parent_path();
-    const std::string targetFileName = configPath.filename().string();
+    const std::string dirPathUtf8 = OSTPlatform::Encoding::PathToUtf8(dirPath);
+    const std::string targetFileName = OSTPlatform::Encoding::PathToUtf8(configPath.filename());
 
     OSTPlatform::DirectoryWatch::Watch watch;
-    if (!watch.Open(dirPath.string(), 4096)) {
-        LOG_WARN("Failed to open config watch directory: {}", dirPath.string());
+    if (!watch.Open(dirPathUtf8, 4096)) {
+        LOG_WARN("Failed to open config watch directory: {}", dirPathUtf8);
         return;
     }
     if (!watch.IssueRead()) {
@@ -103,25 +113,29 @@ void WatcherThread() {
         return changed;
     };
 
-    while (g_running) {
-        auto waitResult = OSTPlatform::DirectoryWatch::WaitAny(watches, 1000);
-
-        if (!g_running) break;
-        if (waitResult.status == OSTPlatform::DirectoryWatch::WaitStatus::Timeout) continue;
-        if (waitResult.status != OSTPlatform::DirectoryWatch::WaitStatus::Signaled) continue;
-
-        bool changed = drainEvent();
+    try {
         while (g_running) {
-            auto debounceResult = OSTPlatform::DirectoryWatch::WaitAny(watches, kDebounceMs);
-            if (!g_running) break;
-            if (debounceResult.status == OSTPlatform::DirectoryWatch::WaitStatus::Timeout) break;
-            if (debounceResult.status != OSTPlatform::DirectoryWatch::WaitStatus::Signaled) break;
-            changed = drainEvent() || changed;
-        }
+            auto waitResult = OSTPlatform::DirectoryWatch::WaitAny(watches, 1000);
 
-        if (changed) {
-            ReloadConfig();
+            if (!g_running) break;
+            if (waitResult.status == OSTPlatform::DirectoryWatch::WaitStatus::Timeout) continue;
+            if (waitResult.status != OSTPlatform::DirectoryWatch::WaitStatus::Signaled) continue;
+
+            bool changed = drainEvent();
+            while (g_running) {
+                auto debounceResult = OSTPlatform::DirectoryWatch::WaitAny(watches, kDebounceMs);
+                if (!g_running) break;
+                if (debounceResult.status == OSTPlatform::DirectoryWatch::WaitStatus::Timeout) break;
+                if (debounceResult.status != OSTPlatform::DirectoryWatch::WaitStatus::Signaled) break;
+                changed = drainEvent() || changed;
+            }
+
+            if (changed) {
+                ReloadConfig();
+            }
         }
+    } catch (const std::exception& ex) {
+        LOG_WARN("ConfigFileWatcher thread exception: {}", ex.what());
     }
 
     watch.Cancel();

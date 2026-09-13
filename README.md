@@ -40,7 +40,7 @@
 - Unlock an unlimited number of unowned games.
 - Unlock all DLCs for unowned games.
 - Support auto load depot decryption keys from Lua config.
-- Support auto manifest download via `opensteamtool` / `steamrun` / `wudrm` upstream APIs (default is `opensteamtool`), or a custom Lua endpoint (see [Manifest via Lua](#manifest-via-lua)).
+- Support auto manifest download via `manifestdex` / `opensteamtool` / `steamrun` / `wudrm` upstream APIs (default is `manifestdex`), or a custom Lua endpoint (see [Manifest via Lua](#manifest-via-lua)).
 - Support downloading protected games or DLCs that require an access token.
 - Support binding manifest to prevent specific games from being updated.
 
@@ -48,46 +48,33 @@
 - Adding, modifying, deleting, or overwriting `.lua` files in any watched directory automatically triggers a reload. No restart, no offline/online toggle needed.
 
 ### Injection
-- Add optional game-process library injection through `[inject]` in `opensteamtool.toml`.
-- Configure `enabled`, `library_x64`, and `library_x86`; the injected library must match the target process architecture.`library_x64` and `library_x86` may be absolute paths, or relative paths resolved from the Steam root directory.
+- Load third-party DLLs into game processes through `[[inject]]` in `opensteamtool.toml`. See [Third-party DLL injection](#third-party-dll-injection).
 
 ### Family Sharing and Remote Play
 - Bypass Steam Family Sharing restrictions for games that have been added to the library with `addappid` in Lua. All accounts in the Steam Family that participate in sharing must use OpenSteamTool for this to work.
 
 ### Compatible with games protected by Denuvo and SteamStub
-- SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool can reuse Steam's local ConfigStore ticket and forge the requested AppId through a SteamDRMP off-by-four ticket parsing vulnerability, without injecting into the game process.
-- Denuvo-protected games still require explicit ticket data. OpenSteamTool stores `AppTicket` and `ETicket` through the platform credential store.
-- Use `setAppTicket(appid, "hex")` and `setETicket(appid, "hex")` in Lua config to write these values to the platform credential store automatically.
-- Denuvo verification has a 30-minute validity window. After this window expires, authorization may fail with Denuvo error code `88500005`; refresh the ticket data before retrying.
-- AppTicket priority: explicit tickets have the highest priority, including tickets configured by `setAppTicket` and existing cached `AppTicket` credential values. If no explicit AppTicket is available, OpenSteamTool falls back to the forged local ConfigStore ticket path.
-- SteamID priority: read cached `SteamID` first; if missing, parse from explicit `AppTicket`. On Windows, the credential store backend currently uses `HKCU\Software\Valve\Steam\Apps\<AppId>`. The Linux backend is not implemented yet.
+- SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool forges the requested AppId using Steam's local ConfigStore ticket, without injecting into the game process.
+- Denuvo-protected games require credential data. Credentials are stored under `<Steam or Portable Dir>/config/credentials/<AppId>/` (`AppTicket.bin`, `ETicket.bin`, `SteamID.txt`), no longer in the Windows Registry.
+- **Explicit Tickets**: Use `setAppTicket(appid, "hex")` and `setETicket(appid, "hex")` in Lua config. `AppTicket` inherently contains the owner's SteamID; configuring `SteamID.txt` is **not** required when using explicit tickets. Deleting the Lua script automatically cleans up this directory.
+- **Account Switching Offline Auth**: When an account owning the game launches online and passes verification, OpenSteamTool automatically saves its `SteamID.txt`. Simply switch to an account without the game.
+- **SteamID Priority & Error 54**: The SteamID embedded in `AppTicket` takes priority; if no explicit ticket exists, `SteamID.txt` is used. A mismatch between the SteamID and ticket causes Denuvo Error 54 (`k_EResultDiskFull`).
+- Denuvo tokens may expire or be bound to hardware. If launch fails with Denuvo error `88500005`, re-extract and refresh the ticket data in the Lua config.
 
-#### Extracting tickets with `extract_tickets`
+### Extracting Tickets & Config with `extract_tickets`
 
-The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you need for `setAppTicket` / `setETicket`. Run it on a machine where Steam is running and logged into an account that **owns** the target game.
+The `extract_tickets` tool extracts authorization tickets (`AppTicket` / `ETicket`), owned DLCs, and cached manifest files (`*.manifest`) for games you own, generating a ready-to-use `<appid>.lua` config.
 
-1. Build the tools (see [Build](#build)); the binary lands in `build/tools/Release/extract_tickets.exe`.
-2. Run it with the target AppId (or run it with no argument and type the AppId when prompted):
-   ```powershell
-   extract_tickets.exe 1361510
-   ```
-3. It reads the Steam install path from the registry, loads `steamclient64.dll`, and writes everything into an `<appid>/` folder next to the executable:
-   - `appticket.bin` — raw app ownership ticket (binary)
-   - `eticket.bin` — raw encrypted app ticket (binary)
-   - `tickets.txt` — plain-text summary with the hex strings:
-     ```
-     appid:1361510
-     appticket(184 bytes):14000000...
-     eticket(143 bytes):...
-     ```
-   A ticket that could not be obtained is reported as `appticket:null` / `eticket:null`.
-4. Paste the hex strings from `tickets.txt` into your Lua config:
-   ```lua
-   setAppTicket(1361510, "14000000...")
-   setETicket(1361510, "...")
-   ```
-
-> **Note:** Tickets are only valid when extracted from an account that **genuinely owns** the game.
+* **Download**: Available from the [GitHub Actions Tools Workflow](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml).
+* **Usage**:
+  Run it while Steam is running and logged into an account that owns the target game (pass the AppId or enter when prompted):
+  ```powershell
+  extract_tickets.exe 1361510
+  ```
+* **Output** (saved in the `<appid>/` directory):
+  * `<appid>.lua` — Complete, ready-to-use config (including AppId, owned DLCs, depot keys, pinned manifests via `setManifestid`, and tickets). Copy directly to `config/lua/`.
+  * `*.manifest` — Cached depot manifest files automatically extracted for your game and DLCs.
+  * `appticket.bin` / `eticket.bin` — Raw authorization tickets.
 
 ### Stats and Achievements
 - Enable stats and achievements for unowned games.
@@ -102,10 +89,25 @@ The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you n
 - Steam Cloud synchronization support.(This is a huge project)
 
 ## Usage
-1. Run `build.bat` from the project root to build the project.
-2. Copy generated `dwmapi.dll`, `xinput1_4.dll` and `OpenSteamTool.dll` to the Steam root directory.
-3. Create Lua directory (for example `C:\steam\config\lua`) and place Lua scripts there. The DLL will automatically load and execute them.
-4. Lua example:
+
+### Method 1: Portable Mode (Recommended, using ost-Injector)
+
+Portable mode operates completely independently: **no DLLs are placed in the Steam directory, and the Steam installation folder remains untouched**:
+
+1. Extract the build / release package (containing `ost-Injector.exe`, `OpenSteamTool.dll`, `CreateAutoInjectTask.bat`, `DeleteAutoInjectTask.bat`, `config.ini`, etc.) to any standalone portable directory (e.g. `D:\OpenSteamTool_Portable`).
+2. Create a `config/lua/` folder in that directory and place your game/DLC unlock Lua scripts there (e.g. `games.lua`).
+3. Choose a launch method:
+   - **Manual Launch**: Run `ost-Injector.exe` directly. It will detect or launch Steam and inject `OpenSteamTool.dll` once the Steam UI initializes.
+   - **Auto-Inject on Startup**: Right-click `CreateAutoInjectTask.bat` and select "Run as administrator" to create a scheduled logon task. The injector runs quietly in the background (`-watch` mode) and auto-injects whenever Steam starts. To remove the task, right-click and run `DeleteAutoInjectTask.bat` as administrator.
+   - **Command Line Modes**: `ost-Injector.exe` supports `-watch` (background daemon) and `-silent` (one-shot silent injection). The default `config.ini` allows customizing the Steam executable path and DLL path.
+
+### Method 2: Standard Mode (DLL Hijacking)
+
+1. Run `build.bat` from the project root to build the project, or download a pre-built Release package.
+2. Copy the generated `dwmapi.dll`, `xinput1_4.dll`, and `OpenSteamTool.dll` to your Steam root directory.
+3. Create a Lua directory (e.g. `C:\Program Files (x86)\Steam\config\lua`) and place your Lua scripts there. The DLL will automatically load and execute them.
+
+### Lua Configuration Example
 ```lua
 addappid(1361510) -- unlock game with appid 1361510
 
@@ -118,9 +120,8 @@ addtoken(1361510,"2764735786934684318") -- add access token ("276473578693468431
 setManifestid(1361511,"5656605350306673283") -- pin depotid:1361511 manifest_gid:5656605350306673283, size defaults to 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- same but with explicit size
 
-setAppTicket(1361510,"0100000000000000...") -- write AppTicket to the credential store; on Windows: HKCU\Software\Valve\Steam\Apps\1361510\AppTicket
-
-setETicket(1361510,"0100000000000000...") -- write ETicket to the credential store; on Windows: HKCU\Software\Valve\Steam\Apps\1361510\ETicket
+setAppTicket(1361510,"0100000000000000...") -- write AppTicket to local store (config/credentials/1361510/AppTicket.bin)
+setETicket(1361510,"0100000000000000...")   -- write ETicket to local store (config/credentials/1361510/ETicket.bin)
 
 setStat(1361510, "76561197960287930") -- use the specified SteamID's achievement data for appid 1361510
 -- If not configured, the stats API is used when enabled; otherwise default SteamID 76561198028121353 is used.
@@ -140,8 +141,8 @@ The file is watched while Steam is running; valid changes are hot-reloaded witho
 level = "info"
 
 [manifest]
-# Upstream API for depot manifest request codes.  Options: "opensteamtool", "steamrun", "wudrm"
-url = "opensteamtool"
+# Upstream API for depot manifest request codes.  Options: "manifestdex", "opensteamtool", "steamrun", "wudrm"
+url = "manifestdex"
 
 # HTTP timeouts for manifest requests (milliseconds)
 timeout_resolve_ms = 5000
@@ -160,16 +161,45 @@ enable_api = true
 [lua]
 paths = []
 
-[inject]
-# Optional library injection into game processes.
-# The injected library must match the target process architecture.
+[cloud]
+# Optional Steam Cloud save redirection for unlocked ("lua") games, powered by
+# CloudRedirect (https://github.com/Selectively11/CloudRedirect).
+# When enabled, OpenSteamTool loads cloud_redirect.dll inside Steam, registers
+# every addappid() game as a redirected app, and routes their Steam Cloud RPCs
+# through CloudRedirect's cloud-save engine.
+#
+# Provider sign-in (Google Drive / OneDrive / local folder) is still done through
+# CloudRedirect's own companion app — OpenSteamTool only hosts the DLL.
 enabled = false
-# library_x64 = "OpenSteamTool.GameHook.x64.dll"
-# library_x86 = "OpenSteamTool.GameHook.x86.dll"
+# Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
+# Defaults to "<Steam>/cloud_redirect.dll" when unset.
+# library = "cloud_redirect.dll"
+
+[inject]
+# Optional DLL injection into game processes. See "Third-party DLL injection" below.
+# [[inject]]
+# path = "{your_dll}.dll"
 
 # Optional metadata mirror. See "Steam version compatibility" below.
 [remote]
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+```
+
+### Third-party DLL injection
+
+OpenSteamTool can load third-party DLLs into game processes. Each `[[inject]]` entry is injected when every condition it sets matches the launch; matching entries are injected in listed order.
+
+| Key | Explanation |
+|-----|---------|
+| `path` | DLL to load. A bare file name resolves next to `steam.exe`; an absolute path is used as-is. Missing files are skipped. |
+| `when_cmdline` | Substring that must appear in the launch command line. Omit to match any. |
+| `when_appids` | AppIds to restrict to. Omit/leave empty to match any. |
+| `all_games` | `false` (default) injects only into games added by the manifest; `true` injects into every game you launch. |
+
+```toml
+[[inject]]
+path = "OnlineFix.dll"
+when_cmdline = "-onlinefix"
 ```
 
 ### Manifest via Lua
@@ -242,6 +272,7 @@ Debug builds write per-module log files under `<Steam>/opensteamtool/`:
 | `onlinefix.log`     | `LOG_ONLINEFIX_*` | Online fix (480 AppId spoofing) |
 | `richpresence.log`  | `LOG_RICHPRESENCE_*` | Rich Presence packet construction and injection |
 | `steamui.log`       | `LOG_STEAMUI_*` | SteamUI hook diagnostics |
+| `inject.log`        | `LOG_INJECT_*` | Third-party DLL injection (`[[inject]]`) matching and results |
 | `pipe.log`          | `LOG_PIPE_*` | Pipe handshakes, process inspection, Denuvo authorization, library injection |
 | `platform.log`      | `LOG_PLATFORM_*` | Platform helper diagnostics, including remote-process operations |
 
@@ -263,8 +294,8 @@ build.bat
 ```
 
 ### Output
-- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`
-- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`
+- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`, `build/Debug/ost-Injector.exe`, and auto-copied helper scripts
+- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`, `build/Release/ost-Injector.exe`, and auto-copied helper scripts
 
 ## Disclaimer
 This project is provided for research and educational purposes only. You are responsible for complying with local laws, platform terms of service, and software licenses.

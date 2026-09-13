@@ -1,4 +1,6 @@
 #include "PatternLoader.h"
+#include "dllmain.h"
+#include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Memory.h"
 #include "OSTPlatform/include/Numbers.h"
 #include "Utils/Logging/Log.h"
@@ -148,6 +150,7 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
                                     const std::string& sha256,
                                     const std::string& component)
 {
+    const std::string rootLabel = IsPortableMode() ? "<PortableDir>" : "<Steam>";
     SteamDiagnostics::ShowWarning(
         "OpenSteamTool - Unsupported Steam Version",
         "OpenSteamTool: signature file not found for " + dllName + ".\n\n"
@@ -156,7 +159,7 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
         "You can:\n"
         "  1. Wait for the next signature update, then restart Steam.\n"
         "  2. Drop a matching TOML at:\n"
-        "       <Steam>\\opensteamtool\\pattern\\" + component + "\\" + sha256 + ".toml\n"
+        "       " + rootLabel + "\\opensteamtool\\pattern\\" + component + "\\" + sha256 + ".toml\n"
         "  3. Check upstream:\n"
         "       https://github.com/OpenSteam001/steam-monitor/tree/pattern/" + component + "\n"
         "  4. Report the diagnostics below:\n"
@@ -187,7 +190,7 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
         PatternMap map = ParsePatternString(r.body, &parseErr);
         if (!map.empty()) {
             LOG_INFO("PatternLoader: loaded {} patterns for {} ({})",
-                     map.size(), component, r.fromCache ? "cache fallback" : "remote");
+                     map.size(), component, r.fromCache ? "cache" : "remote");
             g_moduleMaps[module] = std::move(map);
             return true;
         }
@@ -196,7 +199,8 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
     }
 
     // Total failure — popup + disable module's hooks.
-    std::string dllName = fs::path(dllPath).filename().string();
+    std::string dllName = OSTPlatform::Encoding::PathToUtf8(
+        OSTPlatform::Encoding::PathFromUtf8(dllPath).filename());
     std::string sha     = r.sha256.empty() ? "(hash failed)" : r.sha256;
     ShowDownloadFailedPopup(dllName, sha, component);
     g_failedModules.insert(module);

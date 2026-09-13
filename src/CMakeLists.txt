@@ -25,6 +25,8 @@ if(NOT WIN32)
     return()
 endif()
 
+add_compile_definitions(NOMINMAX)
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenSteamToolBuildInfo.h.in"
@@ -103,6 +105,7 @@ add_library(OpenSteamTool SHARED
 
     # Shared utilities
     Utils/Tickets/AppTicket.cpp
+    Utils/Tickets/EticketClient.cpp
     Utils/Config/Config.cpp
     Utils/Config/ConfigFileWatcher.cpp
     Utils/Config/LuaConfig.cpp
@@ -168,6 +171,22 @@ target_compile_definitions(OpenSteamTool PRIVATE
     $<$<CONFIG:Debug>:OPENSTEAMTOOL_LOGGING_ENABLED>
 )
 
+# Backend endpoint for on-demand eticket minting (strict Denuvo titles that bind
+# their encrypted app ticket to a launch nonce). Empty by default: the feature is
+# off and the DLL never makes a network request. Point your own build at your own
+# backend and the resulting DLL is self-contained, no Lua config needed:
+#
+#   cmake -B build -DOST_ETICKET_URL="https://your-host/eticket"
+#
+# Left out of the source deliberately so no single deployment's backend ships
+# baked into a public tree. seteticketurl() in the Lua config overrides it.
+set(OST_ETICKET_URL "" CACHE STRING
+    "Backend URL for on-demand eticket minting (empty disables the feature)")
+if(OST_ETICKET_URL)
+    target_compile_definitions(OpenSteamTool PRIVATE
+        OST_ETICKET_URL="${OST_ETICKET_URL}")
+endif()
+
 # ---------------------------------------------------------------------------
 # dwmapi.dll hijack — small loader DLL placed alongside Steam.
 # ---------------------------------------------------------------------------
@@ -182,3 +201,13 @@ add_library(xinput1_4 SHARED
     xinput1_4/xinput1_4.cpp
     xinput1_4/xinput1_4.def
 )
+
+# ---------------------------------------------------------------------------
+# ost-Injector — portable injector executable (defined in tools/CMakeLists.txt).
+# Ensure ost-Injector is always built alongside OpenSteamTool.
+# ---------------------------------------------------------------------------
+if(TARGET ost-Injector)
+    add_dependencies(OpenSteamTool ost-Injector)
+endif()
+
+

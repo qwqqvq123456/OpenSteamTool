@@ -35,7 +35,7 @@
 - Desbloquea una cantidad ilimitada de juegos que no poseas.
 - Desbloquea todos los DLC para juegos que no poseas.
 - Soporta la carga automática de claves de descifrado de depósitos(depots) desde la configuración de Lua.
-- Soporta la descarga automática de manifiestos a través de las APIs ascendentes (upstream APIs) de `opensteamtool` / `steamrun` / `wudrm` (por defecto es opensteamtool), o mediante un endpoint personalizado de Lua (ver [Manifest a traves de Lua](#manifest-via-lua)).
+- Soporta la descarga automática de manifiestos a través de las APIs ascendentes (upstream APIs) de `manifestdex` / `opensteamtool` / `steamrun` / `wudrm` (por defecto es manifestdex), o mediante un endpoint personalizado de Lua (ver [Manifest a traves de Lua](#manifest-via-lua)).
 - Soporta la descarga de juegos protegidos o DLCs que requieran un token de acceso.
 - Soporta la vinculación de manifiestos para evitar que juegos específicos se actualicen.
 
@@ -50,39 +50,27 @@
 - Omite las restricciones de Steam Family Sharing para los juegos que se hayan añadido a la biblioteca con `addappid` en Lua. Todas las cuentas de la familia de Steam que participen en el préstamo familiar deben usar OpenSteamTool para que esto funcione.
 
 ### Compatible con juegos protegidos por Denuvo y SteamStub
-- Los juegos protegidos únicamente por SteamStub no requieren la configuración de `AppTicket`. OpenSteamTool puede reutilizar el ticket local de ConfigStore de Steam y falsificar el AppId solicitado a través de una vulnerabilidad de desbordamiento por cuatro (off-by-four ticket parsing vulnerability) en SteamDRMP, sin necesidad de inyectarse en el proceso del juego.
-- Los juegos protegidos por Denuvo siguen requiriendo datos explícitos del ticket. En `HKEY_CURRENT_USER\Software\Valve\Steam\Apps\{AppId}`, tanto `AppTicket` como `ETicket` son valores `REG_BINARY`.
-- Utiliza `setAppTicket(appid, "hex")` y `setETicket(appid, "hex")` en la configuración de Lua para escribir estos valores en el registro de forma automática.
-- La verificación de Denuvo tiene una ventana de validez de 30 minutos. Cuando esta ventana expira, la autorización puede fallar con el código de error de Denuvo `88500005`; actualiza los datos del ticket antes de volver a intentarlo.
-- Prioridad de AppTicket: los tickets explícitos tienen la prioridad más alta, incluyendo los tickets configurados por `setAppTicket` y los valores de `AppTicket` ya existentes en el registro. Si no hay ningún AppTicket explícito disponible, OpenSteamTool recurre a la ruta del ticket falsificado de ConfigStore local.
-- Prioridad de SteamID: primero lee `SteamID` como `REG_SZ`(únicamente numérico); si no se encuentra, lo analiza a partir del `AppTicket` explícito.
+- Los juegos con protección exclusiva SteamStub no requieren `AppTicket`. OpenSteamTool falsifica el AppId mediante el ticket de ConfigStore de Steam, sin inyectarse en el proceso del juego.
+- Los juegos con Denuvo requieren datos de credenciales. Se almacenan en `<Directorio de Steam o Portable>/config/credentials/<AppId>/` (`AppTicket.bin`, `ETicket.bin`, `SteamID.txt`), ya no en el Registro de Windows.
+- **Tickets explícitos**: Usa `setAppTicket(appid, "hex")` y `setETicket(appid, "hex")` en la configuración Lua. `AppTicket` ya contiene el SteamID; **no** es necesario configurar `SteamID.txt` si se usan tickets explícitos. Al eliminar el script Lua, este directorio se limpia automáticamente.
+- **Autorización offline al cambiar de cuenta**: Cuando una cuenta que posee el juego inicia en línea y pasa la verificación, el sistema guarda automáticamente su `SteamID.txt`. Basta con cambiar a una cuenta sin el juego.
+- **Prioridad de SteamID y Error 54**: El SteamID del `AppTicket` tiene prioridad; si no hay ticket explícito, se lee `SteamID.txt`. Si el SteamID no coincide con el ticket, Denuvo devolverá el Error 54 (`k_EResultDiskFull`).
+- Los tokens de Denuvo pueden caducar. Si la autorización falla con el error `88500005`, vuelve a extraer y actualiza los datos del ticket en la configuración Lua.
 
-### Extracción de tickets con `extract_tickets`
-La herramienta `extract_tickets` vuelca las cadenas hexadecimales de `AppTicket` y `ETicket` que necesitas para `setAppTicket` / `setETicket`. Ejecútala en una máquina donde Steam esté abierto e iniciado sesión en una cuenta que sea **propietaria** del juego en cuestión.
+### Extracción de tickets y configuración con `extract_tickets`
 
-1. Compila las herramientas (Revisa [Build](#build)); el binario se generará en `build/tools/Release/extract_tickets.exe`.
-2. Ejecútalo pasando el AppId del juego como argumento (o ejecútalo sin argumentos e introduce el AppId cuando se te solicite):
-   ```powershell
-   extract_tickets.exe 1361510
-   ```
-3. La herramienta leerá la ruta de instalación de Steam desde el registro, cargará `steamclient64.dll` y escribirá todo dentro de una carpeta `<appid>/` junto al ejecutable:
-   - `appticket.bin` — ticket bruto de propiedad de la aplicación (binario)
-   - `eticket.bin` — ticket cifrado bruto de la aplicación (binario)
-   - `tickets.txt` — resumen en texto plano con las cadenas hexadecimales:
-     ```
-     appid:1361510
-     appticket(184 bytes):14000000...
-     eticket(143 bytes):...
-     ```
-   Si un ticket no se puede obtener, se reportará como
-   `appticket:null` / `eticket:null`.
-4. Pega las cadenas hexadecimales de `tickets.txt` en tu configuración de Lua:
-   ```lua
-   setAppTicket(1361510, "14000000...")
-   setETicket(1361510, "...")
-   ```
+La herramienta `extract_tickets` extrae tickets de autorización (`AppTicket` / `ETicket`), DLCs en posesión y archivos de manifiesto en caché (`*.manifest`) de los juegos que posees, generando una configuración `<appid>.lua` lista para usar.
 
-> **Nota:** Los tickets solo son válidos cuando se extraen de una cuenta que **realmente posee** el juego.
+* **Descarga**: Disponible en el [flujo de trabajo de GitHub Actions Tools](https://github.com/mmxlyo/OpenSteamTool/actions/workflows/tools.yml).
+* **Uso**:
+  Ejecútala mientras Steam está abierto e iniciado sesión en una cuenta propietaria del juego (indicando el AppId o introduciéndolo cuando se te solicite):
+  ```powershell
+  extract_tickets.exe 1361510
+  ```
+* **Salida** (guardada en la carpeta `<appid>/`):
+  * `<appid>.lua` — Configuración completa y lista para usar (incluye AppId, DLCs en posesión, claves de depot, manifiestos fijados con `setManifestid` y tickets). Cópiala directamente a `config/lua/`.
+  * `*.manifest` — Archivos de manifiesto de depot en caché extraídos automáticamente para tu juego y DLCs.
+  * `appticket.bin` / `eticket.bin` — Tickets de autorización brutos.
 
 ### Estadísticas y logros
 - Activa las estadísticas y los logros para los juegos que no poseas.
@@ -97,10 +85,25 @@ La herramienta `extract_tickets` vuelca las cadenas hexadecimales de `AppTicket`
 - Soporte para la sincronización con Steam Cloud (este es un proyecto enorme).
 
 ## Uso
-1. Ejecuta `build.bat` desde la raíz del proyecto para compilarlo.
+
+### Método 1: Modo Portátil (Recomendado, usando ost-Injector)
+
+El modo portátil funciona de forma completamente independiente: **no se coloca ninguna DLL en el directorio de Steam y la carpeta de instalación de Steam permanece intacta**:
+
+1. Extrae el paquete de lanzamiento (que contiene `ost-Injector.exe`, `OpenSteamTool.dll`, `CreateAutoInjectTask.bat`, `DeleteAutoInjectTask.bat`, `config.ini`, etc.) en cualquier carpeta portátil independiente (por ejemplo, `D:\OpenSteamTool_Portable`).
+2. Crea una carpeta `config/lua/` en ese directorio y coloca allí tus scripts Lua de desbloqueo (como `games.lua`).
+3. Elige un método de inicio:
+   - **Inicio Manual**: Ejecuta `ost-Injector.exe` directamente. Detectará o iniciará Steam e inyectará `OpenSteamTool.dll` tan pronto como la interfaz de Steam esté lista.
+   - **Inyección Automática al Iniciar Sesión**: Haz clic derecho en `CreateAutoInjectTask.bat` y selecciona "Ejecutar como administrador" para crear una tarea programada. El inyector se ejecutará silenciosamente en segundo plano (modo `-watch`) y se inyectará automáticamente cada vez que se inicie Steam. Para desinstalar la tarea, haz clic derecho y ejecuta `DeleteAutoInjectTask.bat` como administrador.
+   - **Línea de Comandos**: `ost-Injector.exe` admite `-watch` (demonio en segundo plano) y `-silent` (inyección silenciosa única). El archivo `config.ini` permite personalizar la ruta del ejecutable de Steam y la ruta de la DLL.
+
+### Método 2: Modo Estándar (Secuestro de DLL / DLL Hijacking)
+
+1. Ejecuta `build.bat` desde la raíz del proyecto para compilarlo, o descarga un paquete Release precompilado.
 2. Copia los archivos generados `dwmapi.dll`, `xinput1_4.dll` y `OpenSteamTool.dll` al directorio raíz de Steam.
-3. Crea un directorio para Lua (por ejemplo, C:\steam\config\lua) y coloca allí tus scripts de Lua. La DLL los cargará y ejecutará automáticamente.
-4. Ejemplo de Lua:
+3. Crea un directorio para Lua (por ejemplo, `C:\Program Files (x86)\Steam\config\lua`) y coloca allí tus scripts de Lua. La DLL los cargará y ejecutará automáticamente.
+
+### Ejemplo de Configuración Lua
 ```lua
 addappid(1361510) -- desbloquea el juego con appid 1361510
 
@@ -113,9 +116,8 @@ addtoken(1361510,"2764735786934684318") -- añade el token de acceso ("276473578
 setManifestid(1361511,"5656605350306673283") -- fija depotid:1361511 manifest_gid:5656605350306673283, el tamaño por defecto es 0
 setManifestid(1361511,"5656605350306673283", 12345678) -- lo mismo, pero con un tamaño explícito
 
-setAppTicket(1361510,"0100000000000000...") -- escribe AppTicket (REG_BINARY) en HKCU\Software\Valve\Steam\Apps\1361510\AppTicket
-
-setETicket(1361510,"0100000000000000...") -- escribe ETicket (REG_BINARY) en HKCU\Software\Valve\Steam\Apps\1361510\ETicket
+setAppTicket(1361510,"0100000000000000...") -- escribe AppTicket en el almacenamiento local (config/credentials/1361510/AppTicket.bin)
+setETicket(1361510,"0100000000000000...")   -- escribe ETicket en el almacenamiento local (config/credentials/1361510/ETicket.bin)
 
 setStat(1361510, "76561197960287930") -- utiliza los datos de logros del SteamID especificado para el appid 1361510
 -- Si no se configura, se utiliza la API de estadísticas cuando está habilitada; de lo contrario se usa el SteamID por defecto 76561198028121353.
@@ -134,8 +136,8 @@ El archivo se supervisa mientras Steam está en ejecución; los cambios válidos
 level = "info"
 
 [manifest]
-# API ascendente para los códigos de solicitud de manifiestos de depósito. Opciones: "opensteamtool", "steamrun", "wudrm"
-url = "opensteamtool"
+# API ascendente para los códigos de solicitud de manifiestos de depósito. Opciones: "manifestdex", "opensteamtool", "steamrun", "wudrm"
+url = "manifestdex"
 
 # Tiempos de espera HTTP (timeouts) para las solicitudes de manifiestos (en milisegundos)
 timeout_resolve_ms = 5000
@@ -256,9 +258,9 @@ build.bat
 ```
 
 ### Archivos de salida
-- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`
+- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`, `build/Debug/ost-Injector.exe`, y scripts auxiliares copiados automáticamente.
 
-- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`
+- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`, `build/Release/ost-Injector.exe`, y scripts auxiliares copiados automáticamente.
 
 ## Descargo de responsabilidad
 Este proyecto se proporciona únicamente con fines de investigación y educativos. Eres responsable de cumplir con las leyes locales, los términos de servicio de la plataforma y las licencias de software correspondientes.
